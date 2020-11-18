@@ -1,6 +1,6 @@
 # define provider and region
 provider "aws" {  
-    region = "us-east-2"
+    region = "us-east-1"
 }
 
 # define variable for server port
