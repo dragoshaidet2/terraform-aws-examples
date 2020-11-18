@@ -1,22 +1,16 @@
-provider "aws" {
-  region = "us-east-1"
+# define provider and region
+provider "aws" {  
+    region = "us-east-2"
 }
 
-# data source is readonly information
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnet_ids" "default" {
-  vpc_id = data.aws_vpc.default.id
-}
-
+# define variable for server port
 variable "server_port" {
   description = "The port the server will use for HTTP requests"
   type        = number
   default     = 8080
 }
 
+# instance security group
 resource "aws_security_group" "instance" {
   name = "terraform-example-instance"
 
@@ -26,53 +20,33 @@ resource "aws_security_group" "instance" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-# ubuntu 20.04 LTS ami-089e6b3b328e5a2c1
+#1 for autoscaling we need a launch configuration
 resource "aws_launch_configuration" "example" {
-  image_id               = "ami-089e6b3b328e5a2c1"
-  instance_type          = "t3.micro"
+  image_id        = "ami-0a91cd140a1fc148a"
+  instance_type   = "t3.micro"
   security_groups = [aws_security_group.instance.id]
+  # put spot price for getting spot instances
+  spot_price    = "0.005"
 
   user_data = <<-EOF
               #!/bin/bash
               echo "Hello, World" > index.html
               nohup busybox httpd -f -p ${var.server_port} &
               EOF
-}
-
-resource "aws_lb_target_group" "asg" {
-  name     = "terraform-asg-example"
-  port     = var.server_port
-  protocol = "HTTP"
-  vpc_id   = data.aws_vpc.default.id
-
-  health_check {
-    path                = "/"
-    protocol            = "HTTP"
-    matcher             = "200"
-    interval            = 15
-    timeout             = 3
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-  }
-}
-
-resource "aws_autoscaling_group" "example" {
-  launch_configuration = aws_launch_configuration.example.name
-  vpc_zone_identifier  = data.aws_subnet_ids.default.ids
-
-  target_group_arns = [aws_lb_target_group.asg.arn]  
-  health_check_type = "ELB"
-
-  min_size = 2
-  max_size = 10
-
-  tag {
-    key                 = "Name"
-    value               = "terraform-asg-example"
-    propagate_at_launch = true
-  }
 
   # Required when using a launch configuration with an auto scaling group.
   # https://www.terraform.io/docs/providers/aws/r/launch_configuration.html
@@ -81,6 +55,17 @@ resource "aws_autoscaling_group" "example" {
   }
 }
 
+#2 define VPC for as data
+data "aws_vpc" "default" {
+  default = true
+}
+
+#3 define subnets as data
+data "aws_subnet_ids" "default" {
+  vpc_id = data.aws_vpc.default.id
+}
+
+#4 define security group for load balancer
 resource "aws_security_group" "alb" {
   name = "terraform-example-alb"
 
@@ -100,7 +85,7 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-
+#5 define load balancer
 resource "aws_lb" "example" {
   name               = "terraform-asg-example"
   load_balancer_type = "application"
@@ -108,7 +93,7 @@ resource "aws_lb" "example" {
   security_groups    = [aws_security_group.alb.id]
 }
 
-# arn = amazon resource name
+#6 define the listener for laod balancer
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.example.arn
   port              = 80
@@ -126,6 +111,43 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+#7 define load balancer target group
+resource "aws_lb_target_group" "asg" {
+  name     = "terraform-asg-example"
+  port     = var.server_port
+  protocol = "HTTP"
+  vpc_id   = data.aws_vpc.default.id
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 15
+    timeout             = 3
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+#8 Create autoscaling group
+resource "aws_autoscaling_group" "example" {
+  launch_configuration = aws_launch_configuration.example.name
+  vpc_zone_identifier  = data.aws_subnet_ids.default.ids
+
+  target_group_arns = [aws_lb_target_group.asg.arn]
+  health_check_type = "ELB"
+
+  min_size = 2
+  max_size = 10
+
+  tag {
+    key                 = "Name"
+    value               = "terraform-asg-example"
+    propagate_at_launch = true
+  }
+}
+
+#9 create listener rule for load balancer
 resource "aws_lb_listener_rule" "asg" {
   listener_arn = aws_lb_listener.http.arn
   priority     = 100
@@ -142,6 +164,7 @@ resource "aws_lb_listener_rule" "asg" {
   }
 }
 
+#10 give dns name for load balancer as output
 output "alb_dns_name" {
   value       = aws_lb.example.dns_name
   description = "The domain name of the load balancer"
